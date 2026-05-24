@@ -323,8 +323,8 @@
       <li class="section-head"><a href="#threading">Threading Model</a></li>
       <li class="section-head"><a href="#wire">Wire Formats</a></li>
       <li><a href="#wire-ticks">ticks channel</a></li>
-      <li><a href="#wire-candles">1min_candles channel</a></li>
-      <li><a href="#wire-csv">CSV file</a></li>
+      <li><a href="#wire-candles">Candle channels</a></li>
+      <li><a href="#wire-csv">CSV files</a></li>
       <li class="section-head"><a href="#redis-keys">Redis Keys</a></li>
       <li class="section-head"><a href="#setup">Setup &amp; Config</a></li>
       <li class="section-head"><a href="#running">Running</a></li>
@@ -355,7 +355,7 @@
         </div>
         <div class="card-item accent3">
           <div class="card-title">Output</div>
-          <div class="card-value">1-min OHLCV bars → CSV + Redis channel</div>
+          <div class="card-value">Multi-timeframe OHLCV bars → CSV + Redis channels</div>
         </div>
         <div class="card-item accent">
           <div class="card-title">Language</div>
@@ -379,7 +379,7 @@
         <div class="flow-arrow">→</div>
         <div class="flow-box">min1_ticks.py</div>
         <div class="flow-arrow">→</div>
-        <div class="flow-box accent3">1min_candles + CSV</div>
+        <div class="flow-box accent3">1min · 5min · 15min · 30min · 1h + CSV</div>
       </div>
     </section>
 
@@ -641,19 +641,46 @@ sequenceDiagram
       <div id="mod-consumer">
         <h3>multi-time/1min/min1_ticks.py <span class="badge badge-teal">long-running</span></h3>
         <p>
-          Subscribes to the <code>ticks</code> Redis channel, maintains a live OHLCV state machine
-          for every tracked symbol, and emits a completed 1-minute bar each time a minute boundary is crossed.
+          Subscribes to the <code>ticks</code> Redis channel and builds OHLCV candles for
+          <strong>every configured timeframe simultaneously</strong> — one Redis subscription,
+          any number of independent candle widths, in a single process.
         </p>
+
+        <h4>Timeframe configuration — the only line you change</h4>
+        <pre><code># Top of min1_ticks.py — edit freely
+TIMEFRAMES = [1, 5, 15, 30, 60]   # minutes</code></pre>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Value (min)</th><th>Label</th><th>Redis channel</th><th>CSV file</th></tr></thead>
+            <tbody>
+              <tr><td>1</td><td><code>1min</code></td><td><code>1min_candles</code></td><td><code>candle_1min-DATE.csv</code></td></tr>
+              <tr><td>5</td><td><code>5min</code></td><td><code>5min_candles</code></td><td><code>candle_5min-DATE.csv</code></td></tr>
+              <tr><td>15</td><td><code>15min</code></td><td><code>15min_candles</code></td><td><code>candle_15min-DATE.csv</code></td></tr>
+              <tr><td>30</td><td><code>30min</code></td><td><code>30min_candles</code></td><td><code>candle_30min-DATE.csv</code></td></tr>
+              <tr><td>60</td><td><code>1h</code></td><td><code>1h_candles</code></td><td><code>candle_1h-DATE.csv</code></td></tr>
+              <tr><td>120</td><td><code>2h</code></td><td><code>2h_candles</code></td><td><code>candle_2h-DATE.csv</code></td></tr>
+              <tr><td>360</td><td><code>6h</code></td><td><code>6h_candles</code></td><td><code>candle_6h-DATE.csv</code></td></tr>
+            </tbody>
+          </table>
+        </div>
 
         <h4>Startup sequence</h4>
         <ol style="padding-left:1.4rem;margin-bottom:1rem;color:var(--text);font-size:0.9rem;">
-          <li>Reads <code>instruments.csv</code> to build <code>allinstrumentMap</code> and <code>tracked_symbols</code> (a set for O(1) lookups).</li>
+          <li>Reads <code>instruments.csv</code> → builds <code>allinstrumentMap</code> and <code>tracked_symbols</code>.</li>
+          <li>Creates <strong>one <code>Queue</code> per timeframe</strong> in <code>tf_queues</code>.</li>
           <li>Subscribes to Redis channel <code>ticks</code>.</li>
-          <li>Starts the <code>buildcandle()</code> thread.</li>
-          <li>Main thread enters the <code>pubsub.listen()</code> loop, feeding <code>messageQueue</code>.</li>
+          <li>Starts <strong>one <code>buildcandle(interval, queue)</code> thread per timeframe</strong>.</li>
+          <li>Main thread enters <code>pubsub.listen()</code>, fanning each raw message into all queues.</li>
         </ol>
 
-        <h4>OHLCV state machine</h4>
+        <h4>Main thread — fan-out loop</h4>
+        <pre><code>for data in pubsub.listen():
+    raw = data['data']
+    for q in tf_queues.values():   # same bytes → every timeframe
+        q.put(raw)</code></pre>
+
+        <h4>OHLCV state machine (one per timeframe thread)</h4>
         <pre><code>candlesticks[symbol][start_time] = {
     "open":   first last_price seen in the period,
     "high":   running maximum,
@@ -666,23 +693,24 @@ sequenceDiagram
 
         <h4>Candle boundary logic</h4>
         <p style="font-size:0.88rem;">
-          <code>nexttime</code> tracks when the current bar should close (09:01, 09:02, …).
-          When <code>exchange_timestamp</code> of any incoming tick ≥ <code>nexttime</code>,
-          a <code>copy.deepcopy</code> snapshot is taken and handed to a fresh <code>writeToFile</code> thread.
-          <code>seen_candle_times</code> (a <code>set</code>) guards against re-triggering on duplicate timestamps.
+          <code>nexttime</code> advances by <code>interval_minutes</code> each time a boundary is crossed.
+          When <code>exchange_timestamp</code> ≥ <code>nexttime</code>,
+          a <code>copy.deepcopy</code> snapshot is handed to a fresh <code>writeToFile</code> thread.
+          <code>seen_candle_times</code> (a <code>set</code>) prevents the boundary from firing twice.
+          Each timeframe thread is fully independent — a slow symbol in one does not affect others.
         </p>
 
-        <h4>writeToFile thread (one per minute)</h4>
+        <h4>writeToFile(candles, start_time, interval_minutes)</h4>
         <p style="font-size:0.88rem;">
-          Receives a <strong>deep-copied</strong> snapshot so <code>buildcandle</code> can immediately continue
-          building the next bar. Batches all Redis <code>PUBLISH</code> calls into a single pipeline
-          (one round-trip), then appends all rows to the daily CSV in one <code>with open(...)</code> block.
+          Derives <code>channel</code> and <code>filename</code> from <code>interval_minutes</code> via <code>label()</code>.
+          Batches all Redis <code>PUBLISH</code> calls into a single pipeline (one round-trip),
+          then appends all rows to the timeframe-specific CSV in one <code>with open(...)</code> block.
         </p>
 
         <div class="callout">
           <strong>Error isolation:</strong> every tick is wrapped in <code>try/except</code>.
-          A malformed tick logs the exception and is skipped — the thread never crashes and
-          missing ticks only produce slightly imprecise bars rather than data loss.
+          A malformed tick logs and is skipped — the thread never crashes and one bad tick
+          only produces a slightly imprecise bar, not data loss.
         </div>
       </div>
     </section>
@@ -705,15 +733,20 @@ sequenceDiagram
 ├── <span class="t-work">_tick_hash_worker  ×1  [producer, daemon]</span>
 │   └── tick_hash_queue.get() → Redis HSET per field
 │
-├── <span class="t-work">buildcandle()  ×1  [consumer, daemon]</span>
-│   └── messageQueue.get(timeout=1) → OHLCV state machine
+├── <span class="t-work">buildcandle(1,   tf_queues[1])   [consumer, daemon]</span>  → 1-min OHLCV state
+├── <span class="t-work">buildcandle(5,   tf_queues[5])   [consumer, daemon]</span>  → 5-min OHLCV state
+├── <span class="t-work">buildcandle(15,  tf_queues[15])  [consumer, daemon]</span>  → 15-min OHLCV state
+├── <span class="t-work">buildcandle(30,  tf_queues[30])  [consumer, daemon]</span>  → 30-min OHLCV state
+├── <span class="t-work">buildcandle(60,  tf_queues[60])  [consumer, daemon]</span>  → 1-hour OHLCV state
+│   (add any interval to TIMEFRAMES to spawn another thread)
 │
-└── <span class="t-work">writeToFile()  ×N  [consumer, daemon — one spawned per minute boundary]</span>
-    └── deepcopy snapshot → Redis pipeline PUBLISH + CSV append
+└── <span class="t-work">writeToFile(snapshot, start, tf)  ×N  [consumer, daemon — one per candle boundary per timeframe]</span>
+    └── deepcopy snapshot → Redis pipeline PUBLISH + timeframe CSV append
 
 <span class="t-comm">
 All workers are daemon threads — killed automatically when the main thread exits.
-Queues provide the only synchronisation; there are no explicit locks.
+Queues are the only synchronisation mechanism; there are no explicit locks.
+Each buildcandle thread is fully independent — a crash in one timeframe does not affect others.
 </span>
       </div>
     </section>
@@ -744,8 +777,8 @@ Queues provide the only synchronisation; there are no explicit locks.
       </div>
 
       <div id="wire-candles">
-        <h3>Redis channel: <code>1min_candles</code></h3>
-        <p>Published by <code>min1_ticks.py</code>. One JSON message per symbol per completed minute.</p>
+        <h3>Redis candle channels (<code>1min_candles</code>, <code>5min_candles</code>, <code>1h_candles</code>, …)</h3>
+        <p>Published by <code>min1_ticks.py</code>. One JSON message per symbol per completed bar. Channel name is derived from <code>TIMEFRAMES</code> automatically — same payload shape on every channel.</p>
         <pre><code><span class="json-brace">{</span>
   <span class="json-key">"timestamp"</span>:    <span class="json-str">"09:15"</span>,
   <span class="json-key">"stockname"</span>:    <span class="json-str">"NIFTY 50"</span>,
@@ -760,11 +793,17 @@ Queues provide the only synchronisation; there are no explicit locks.
       </div>
 
       <div id="wire-csv">
-        <h3>CSV: <code>candle-YYYY-MM-DD.csv</code></h3>
-        <p>Appended by <code>writeToFile</code> each minute. No header row.</p>
+        <h3>CSV files (one per timeframe per day)</h3>
+        <p>Appended by <code>writeToFile</code> at each candle boundary. No header row. Filename encodes the timeframe.</p>
+        <pre><code>candle_1min-2024-01-15.csv
+candle_5min-2024-01-15.csv
+candle_15min-2024-01-15.csv
+candle_30min-2024-01-15.csv
+candle_1h-2024-01-15.csv</code></pre>
+        <p>Each file uses the same format:</p>
         <pre><code>09:15,NIFTY 50,21600.0,21750.5,21580.0,21750.5,123400,98700,4500200
 09:15,RELIANCE,2450.0,2462.5,2448.0,2458.0,34200,28100,980000
-09:16,NIFTY 50,21750.5,21780.0,21740.0,21770.0,145000,112000,5100000</code></pre>
+09:20,NIFTY 50,21750.5,21780.0,21740.0,21770.0,...    ← 5-min file</code></pre>
         <p style="font-size:0.85rem;color:var(--muted);">Columns: <code>time, symbol, open, high, low, close, buyers, sellers, volume</code></p>
       </div>
     </section>
@@ -788,6 +827,11 @@ Queues provide the only synchronisation; there are no explicit locks.
             <tr><td><code>tick_buyer</code></td><td>Hash</td><td>kite_ticker_producer</td><td>Total buy quantity per symbol</td></tr>
             <tr><td><code>tick_seller</code></td><td>Hash</td><td>kite_ticker_producer</td><td>Total sell quantity per symbol</td></tr>
             <tr><td><code>1min_candles</code></td><td>Pub/Sub</td><td>min1_ticks</td><td>Completed 1-min bars (JSON)</td></tr>
+            <tr><td><code>5min_candles</code></td><td>Pub/Sub</td><td>min1_ticks</td><td>Completed 5-min bars (JSON)</td></tr>
+            <tr><td><code>15min_candles</code></td><td>Pub/Sub</td><td>min1_ticks</td><td>Completed 15-min bars (JSON)</td></tr>
+            <tr><td><code>30min_candles</code></td><td>Pub/Sub</td><td>min1_ticks</td><td>Completed 30-min bars (JSON)</td></tr>
+            <tr><td><code>1h_candles</code></td><td>Pub/Sub</td><td>min1_ticks</td><td>Completed 1-hour bars (JSON)</td></tr>
+            <tr><td><code>{label}_candles</code></td><td>Pub/Sub</td><td>min1_ticks</td><td>Any other timeframe in TIMEFRAMES</td></tr>
           </tbody>
         </table>
       </div>
@@ -840,24 +884,41 @@ python ~/kite_candles/set_token.py</code></pre>
 
     <!-- ── Extending ─────────────────────────────────────────── -->
     <section id="extending">
-      <h2>Extending to Other Timeframes</h2>
+      <h2>Changing Timeframes / Multiple Candles at Once</h2>
       <p>
-        The producer is completely unchanged. Copy <code>min1_ticks.py</code> to a new directory
-        and change two values:
+        Edit the single <code>TIMEFRAMES</code> list at the top of <code>min1_ticks.py</code>.
+        Nothing else changes — channel names, filenames, and thread count are all derived automatically.
       </p>
-      <pre><code># For a 5-minute consumer:
+      <pre><code># One timeframe only
+TIMEFRAMES = [5]
 
-# 1. Change the candle width (two places in buildcandle)
-nexttime = time_increment(start_time, 0, 5)   # was 1
-nexttime = time_increment(nexttime,   0, 5)   # was 1
+# Standard multi-timeframe setup
+TIMEFRAMES = [1, 5, 15, 30, 60]
 
-# 2. Change the output channel and filename
-pipeline.publish('5min_candles', ...)          # was 1min_candles
-filename = f"candle5min-{today}.csv"           # was candle-…</code></pre>
+# Extended — 2-hour and 6-hour bars included
+TIMEFRAMES = [1, 5, 15, 30, 60, 120, 360]</code></pre>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Minutes</th><th>label() output</th><th>Redis channel</th><th>CSV filename</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td><code>1min</code></td><td><code>1min_candles</code></td><td><code>candle_1min-DATE.csv</code></td></tr>
+            <tr><td>5</td><td><code>5min</code></td><td><code>5min_candles</code></td><td><code>candle_5min-DATE.csv</code></td></tr>
+            <tr><td>15</td><td><code>15min</code></td><td><code>15min_candles</code></td><td><code>candle_15min-DATE.csv</code></td></tr>
+            <tr><td>30</td><td><code>30min</code></td><td><code>30min_candles</code></td><td><code>candle_30min-DATE.csv</code></td></tr>
+            <tr><td>60</td><td><code>1h</code></td><td><code>1h_candles</code></td><td><code>candle_1h-DATE.csv</code></td></tr>
+            <tr><td>120</td><td><code>2h</code></td><td><code>2h_candles</code></td><td><code>candle_2h-DATE.csv</code></td></tr>
+            <tr><td>240</td><td><code>4h</code></td><td><code>4h_candles</code></td><td><code>candle_4h-DATE.csv</code></td></tr>
+            <tr><td>360</td><td><code>6h</code></td><td><code>6h_candles</code></td><td><code>candle_6h-DATE.csv</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
       <p>
-        Start as many consumer processes as needed — each subscribes to the same <code>ticks</code>
-        channel independently. Redis fan-out delivers every message to every subscriber with no
-        contention and no changes to the producer.
+        The producer is <strong>never touched</strong> — it publishes all ticks to the <code>ticks</code>
+        channel regardless of what consumers exist downstream. Each entry in <code>TIMEFRAMES</code>
+        spawns one independent thread with its own queue and OHLCV state; they share nothing
+        except the read-only instrument maps.
       </p>
     </section>
 

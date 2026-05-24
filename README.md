@@ -321,73 +321,107 @@ The file is large (~500 KB) and contains all exchanges. Both the producer and th
 
 ### `multi-time/1min/min1_ticks.py`
 
-**Purpose:** Subscribes to the `ticks` Redis channel, maintains a live OHLCV state machine for every tracked symbol, and emits a completed 1-minute candle bar each time a minute boundary is crossed.
+**Purpose:** Subscribes to the `ticks` Redis channel and builds OHLCV candles for **every configured timeframe simultaneously** in a single process. One Redis subscription, any number of independent candle widths.
+
+#### Timeframe configuration — the only line you ever change
+
+```python
+# Top of min1_ticks.py
+TIMEFRAMES = [1, 5, 15, 30, 60]   # minutes — edit freely
+```
+
+| Value | Candle width | Redis channel | CSV file |
+|-------|-------------|---------------|----------|
+| `1` | 1 minute | `1min_candles` | `candle_1min-DATE.csv` |
+| `5` | 5 minutes | `5min_candles` | `candle_5min-DATE.csv` |
+| `15` | 15 minutes | `15min_candles` | `candle_15min-DATE.csv` |
+| `30` | 30 minutes | `30min_candles` | `candle_30min-DATE.csv` |
+| `60` | 1 hour | `1h_candles` | `candle_1h-DATE.csv` |
+| `120` | 2 hours | `2h_candles` | `candle_2h-DATE.csv` |
+| `360` | 6 hours | `6h_candles` | `candle_6h-DATE.csv` |
+
+Channel names and filenames are derived automatically by `label(interval_minutes)`.
 
 #### Startup sequence
-1. Reads `instruments.csv` to build `allinstrumentMap` and `tracked_symbols` (the set of symbols this consumer cares about).
-2. Subscribes to Redis channel **`ticks`**.
-3. Starts the `buildcandle()` thread.
-4. Main thread enters `pubsub.listen()` loop, feeding `messageQueue`.
+1. Reads `instruments.csv` to build `allinstrumentMap` and `tracked_symbols`.
+2. Creates **one `Queue` per timeframe** in `tf_queues`.
+3. Subscribes to Redis channel **`ticks`**.
+4. Starts **one `buildcandle(interval_minutes, queue)` thread per timeframe**.
+5. Main thread enters `pubsub.listen()` loop, fanning each raw message into all queues.
 
-#### Main thread — `pubsub.listen()`
-Lightweight receive loop. Only puts the raw bytes into `messageQueue`; no processing. Exits when `datetime.now().time() > 15:29:59`.
+#### Main thread — fan-out loop
 
-#### `buildcandle()` thread
-The core state machine. Runs from 09:00 until 15:30.
+```python
+for data in pubsub.listen():
+    raw = data['data']
+    for q in tf_queues.values():   # delivers the same bytes to every timeframe
+        q.put(raw)
+```
+
+Each timeframe gets its own private copy of every tick batch. There is no sharing of state between timeframe threads.
+
+#### `buildcandle(interval_minutes, queue)` thread
+
+One instance per timeframe. The core state machine. Runs from 09:00 until 15:30.
 
 ```
-State per symbol per minute:
-  candlesticks[symbol][start_time] = {
-      open:   first last_price seen in the period
-      high:   running maximum
-      low:    running minimum
-      last:   most recent last_price (becomes close at boundary)
-      buyer:  latest total_buy_quantity
-      seller: latest total_sell_quantity
-      volume: latest volume_traded
-  }
+candlesticks[symbol][start_time] = {
+    open:   first last_price seen in the period
+    high:   running maximum
+    low:    running minimum
+    last:   most recent last_price  (= close at boundary)
+    buyer:  latest total_buy_quantity
+    seller: latest total_sell_quantity
+    volume: latest volume_traded
+}
 ```
 
 **Candle boundary logic:**
-- `nexttime` tracks when the current bar should close (e.g. 09:01, 09:02, …).
-- When `exchange_timestamp` of any incoming tick ≥ `nexttime`, a `copy.deepcopy` snapshot is taken and handed to a fresh `writeToFile` thread.
-- `seen_candle_times` (a `set`) guards against re-triggering on ticks with the same timestamp.
+- `nexttime` advances by `interval_minutes` each time a boundary is crossed.
+- When `exchange_timestamp` ≥ `nexttime`, a `copy.deepcopy` snapshot of the current state is handed to a fresh `writeToFile` thread.
+- `seen_candle_times` (a `set`) prevents the boundary from firing twice on the same timestamp.
 
-**Error handling:** Every tick is wrapped in `try/except`; a bad tick logs the exception and is skipped — the thread never crashes.
+**Error handling:** Every tick is wrapped in `try/except`; a bad tick is logged and skipped — the thread never crashes.
 
-#### `writeToFile(candles, start_time)` thread
-Receives a deep-copied snapshot so `buildcandle` can immediately continue building the next bar without waiting for I/O.
+#### `writeToFile(candles, start_time, interval_minutes)` thread
+Receives a deep-copied snapshot so `buildcandle` can immediately continue building the next bar.
 
-1. Iterates over all symbols in the snapshot.
-2. Batches all Redis `PUBLISH` calls into a single **pipeline** (one network round-trip).
-3. Publishes each bar as a JSON dict to channel **`1min_candles`**.
-4. Appends all rows to `candle-YYYY-MM-DD.csv` in a single `with open(...)` block.
+1. Derives `channel` and `filename` from `interval_minutes` via `label()`.
+2. Batches all Redis `PUBLISH` calls into a single **pipeline** (one round-trip regardless of symbol count).
+3. Appends all rows to the timeframe-specific CSV in a single `with open(...)` block.
 
 ---
 
 ## Threading Model
 
 ```
-Main Process
+Producer process
 │
 ├── Main Thread
-│   └── (producer) KiteTicker.connect() — blocks; drives WebSocket event loop
-│   └── (consumer) pubsub.listen()     — blocks; feeds messageQueue
+│   └── KiteTicker.connect() — blocks; drives WebSocket event loop
 │
-├── _publish_worker  ×4   [producer]
-│   └── publish_queue.get() → Redis PUBLISH ticks
+├── _publish_worker  ×4   [daemon]
+│   └── publish_queue.get() → json.dumps → Redis PUBLISH ticks
 │
-├── _tick_hash_worker ×1  [producer]
-│   └── tick_hash_queue.get() → Redis HSET per field
+└── _tick_hash_worker ×1  [daemon]
+    └── tick_hash_queue.get() → Redis HSET per field
+
+Consumer process  (TIMEFRAMES = [1, 5, 15, 30, 60])
 │
-├── buildcandle()    ×1   [consumer]
-│   └── messageQueue.get(timeout=1) → OHLCV state machine
+├── Main Thread
+│   └── pubsub.listen() — fans each raw message into all 5 tf_queues
 │
-└── writeToFile()    ×N   [consumer — one per minute boundary]
-    └── deepcopy snapshot → Redis pipeline + CSV append
+├── buildcandle(1,  tf_queues[1])   [daemon] → OHLCV state for 1-min bars
+├── buildcandle(5,  tf_queues[5])   [daemon] → OHLCV state for 5-min bars
+├── buildcandle(15, tf_queues[15])  [daemon] → OHLCV state for 15-min bars
+├── buildcandle(30, tf_queues[30])  [daemon] → OHLCV state for 30-min bars
+├── buildcandle(60, tf_queues[60])  [daemon] → OHLCV state for 1-hour bars
+│
+└── writeToFile(snapshot, start, tf)  ×N  [daemon — one per candle boundary per timeframe]
+    └── Redis pipeline PUBLISH + CSV append
 ```
 
-All worker threads are **daemon threads** — they are killed automatically when the main thread exits. Queues provide the only synchronisation; there are no locks.
+All worker threads are **daemon threads** — killed automatically when the main thread exits. Queues provide the only synchronisation; there are no locks. Each `buildcandle` thread is entirely independent — a crash or slow tick in one timeframe does not affect the others.
 
 ---
 
@@ -416,9 +450,9 @@ Published by `kite_ticker_producer.py`. A JSON-encoded list of tick dicts, one l
 ]
 ```
 
-### Redis channel: `1min_candles`
+### Redis candle channels (`1min_candles`, `5min_candles`, `1h_candles`, …)
 
-Published by `min1_ticks.py`. One JSON message per symbol per completed minute.
+Published by `min1_ticks.py`. One JSON message per symbol per completed bar on each channel. The channel name is derived from `TIMEFRAMES` automatically.
 
 ```json
 {
@@ -434,12 +468,21 @@ Published by `min1_ticks.py`. One JSON message per symbol per completed minute.
 }
 ```
 
-### CSV: `candle-YYYY-MM-DD.csv`
+### CSV files (one per timeframe per day)
 
+```
+candle_1min-2024-01-15.csv
+candle_5min-2024-01-15.csv
+candle_15min-2024-01-15.csv
+candle_30min-2024-01-15.csv
+candle_1h-2024-01-15.csv
+```
+
+Each file format:
 ```
 09:15,NIFTY 50,21600.0,21750.5,21580.0,21750.5,123400,98700,4500200
 09:15,RELIANCE,2450.0,2462.5,2448.0,2458.0,34200,28100,980000
-09:16,NIFTY 50,21750.5,21780.0,21740.0,21770.0,...
+09:20,NIFTY 50,21750.5,21780.0,21740.0,21770.0,...    ← 5-min file
 ```
 
 Columns: `time, symbol, open, high, low, close, buyers, sellers, volume`
@@ -460,6 +503,11 @@ Columns: `time, symbol, open, high, low, close, buyers, sellers, volume`
 | `tick_buyer` | Hash | `kite_ticker_producer.py` | Total buy qty per symbol |
 | `tick_seller` | Hash | `kite_ticker_producer.py` | Total sell qty per symbol |
 | `1min_candles` | Pub/Sub channel | `min1_ticks.py` | Completed 1-min bars (JSON) |
+| `5min_candles` | Pub/Sub channel | `min1_ticks.py` | Completed 5-min bars (JSON) |
+| `15min_candles` | Pub/Sub channel | `min1_ticks.py` | Completed 15-min bars (JSON) |
+| `30min_candles` | Pub/Sub channel | `min1_ticks.py` | Completed 30-min bars (JSON) |
+| `1h_candles` | Pub/Sub channel | `min1_ticks.py` | Completed 1-hour bars (JSON) |
+| `{label}_candles` | Pub/Sub channel | `min1_ticks.py` | Any other timeframe in TIMEFRAMES |
 
 ---
 
@@ -521,19 +569,32 @@ Both producer and consumer shut themselves down at market close (15:30–15:31).
 
 ---
 
-## Extending to Other Timeframes
+## Changing Timeframes / Multiple Candles at Once
 
-The producer is unchanged. For a **5-minute consumer**, copy `multi-time/1min/min1_ticks.py` to `multi-time/5min/min5_ticks.py` and change two values:
+Edit the single `TIMEFRAMES` list at the top of `min1_ticks.py`. Nothing else changes.
 
 ```python
-# Change the candle width
-nexttime = time_increment(start_time, 0, 5)   # was 1
-...
-nexttime = time_increment(nexttime, 0, 5)      # was 1
+# One timeframe only
+TIMEFRAMES = [5]
 
-# Change the output channel and filename
-pipeline.publish('5min_candles', ...)          # was 1min_candles
-filename = f"candle5min-{today}.csv"           # was candle-…
+# Standard multi-timeframe setup
+TIMEFRAMES = [1, 5, 15, 30, 60]
+
+# Extended set including 2-hour and 6-hour bars
+TIMEFRAMES = [1, 5, 15, 30, 60, 120, 360]
 ```
 
-No changes to the producer are needed — it already publishes all ticks to the `ticks` channel.
+Each value in minutes spawns one independent `buildcandle` thread, one Redis channel, and one CSV file. The naming is automatic:
+
+| Minutes | `label()` output | Redis channel | CSV filename |
+|---------|-----------------|---------------|--------------|
+| 1 | `1min` | `1min_candles` | `candle_1min-DATE.csv` |
+| 5 | `5min` | `5min_candles` | `candle_5min-DATE.csv` |
+| 15 | `15min` | `15min_candles` | `candle_15min-DATE.csv` |
+| 30 | `30min` | `30min_candles` | `candle_30min-DATE.csv` |
+| 60 | `1h` | `1h_candles` | `candle_1h-DATE.csv` |
+| 120 | `2h` | `2h_candles` | `candle_2h-DATE.csv` |
+| 240 | `4h` | `4h_candles` | `candle_4h-DATE.csv` |
+| 360 | `6h` | `6h_candles` | `candle_6h-DATE.csv` |
+
+The producer is **never touched** — it publishes all ticks to the `ticks` channel regardless of what consumers exist downstream.
