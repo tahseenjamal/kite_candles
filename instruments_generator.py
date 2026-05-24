@@ -1,29 +1,26 @@
-import requests, calendar
-from datetime import datetime
-from time import sleep
 import os
 import pandas as pd
-
-userdata = pd.read_json("~/kite_candles/userdata")
-
-api_key = userdata['YOURNAME'].apikey
+import requests
+from time import sleep
 
 
-filehandle = open(os.path.join(os.path.expanduser("~/kite_candles"), "instruments.csv"), "w")
+userdata    = pd.read_json(os.path.expanduser("~/kite_candles/userdata"))
+api_key     = userdata['YOURNAME'].apikey
+output_path = os.path.expanduser("~/kite_candles/instruments.csv")
+
+url = "https://api.kite.trade/instruments"
 
 while True:
-    
-    print("https://api.kite.trade/instruments?api_key={}".format(api_key))
-    req = requests.get("https://api.kite.trade/instruments?api_key={}".format(api_key))
+    print("Fetching instruments list...")
+    resp = requests.get(url, params={"api_key": api_key})
 
-    if len(req.content.decode("utf-8")) > 2048:
-
+    if resp.status_code == 200 and len(resp.content) > 2048:
         break
 
+    print(f"Unexpected response (status={resp.status_code}, size={len(resp.content)}), retrying in 15s")
     sleep(15)
 
+with open(output_path, "w") as f:
+    f.write(resp.content.decode("utf-8"))
 
-
-filehandle.write(req.content.decode("utf-8"))
-
-filehandle.close()
+print(f"Instruments saved to {output_path}")

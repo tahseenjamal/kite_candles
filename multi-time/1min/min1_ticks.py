@@ -1,229 +1,188 @@
 import calendar
-import logging
-import _thread
-import datetime
-from redis import Redis
+import copy
 import json
-import sys
-import pandas as pd
-from queue import Queue
+import logging
+import os
+import datetime
 from datetime import date, time, timedelta
+from queue import Queue, Empty
+from threading import Thread
 from time import sleep
 
-def json_output(**kwargs):
-    for key in kwargs.keys():
-        globals()[key]=kwargs[key]
-    return kwargs
+import pandas as pd
+from redis import Redis
 
 
-logging.basicConfig(filename=f'log-{date.today()}', level = logging.INFO, format='%(asctime)s:%(levelname)s,%(message)s')
+logging.basicConfig(
+    filename=f'log-{date.today()}',
+    level=logging.INFO,
+    format='%(asctime)s:%(levelname)s:%(message)s'
+)
+log = logging.getLogger(__name__)
 
-df = pd.read_csv("~/kite_candles/instruments.csv", low_memory = False)
-stocks = df[(df.segment== 'NSE') & (df.exchange == 'NSE') & ~(df.name.isna())]
-indices = df[(df.segment == 'INDICES') & (df.tradingsymbol.str.contains('NIFTY') == True)]
 
-front_month = date(datetime.datetime.now().date().year, datetime.datetime.now().date().month,1) + timedelta(days=70)
-front_month = date(front_month.year, front_month.month, calendar.monthrange(front_month.year, front_month.month)[1])
-front_month = front_month.isoformat()
-fno = df[(df.exchange == 'NFO') & (df.instrument_type == 'FUT') & (df.expiry <= front_month)]
+df = pd.read_csv(os.path.expanduser("~/kite_candles/instruments.csv"), low_memory=False)
 
-final = pd.concat([fno , stocks , indices])
+stocks_df = df[(df.segment == 'NSE') & (df.exchange == 'NSE') & df.name.notna()]
+indices   = df[(df.segment == 'INDICES') & df.tradingsymbol.str.contains('NIFTY')]
 
-instrument_tokens = final.instrument_token.to_list()
-instrumentMap = dict(zip(final.instrument_token, final.tradingsymbol))
+front_month = date(datetime.datetime.now().year, datetime.datetime.now().month, 1) + timedelta(days=70)
+front_month = date(
+    front_month.year,
+    front_month.month,
+    calendar.monthrange(front_month.year, front_month.month)[1]
+).isoformat()
 
-stocks = final.tradingsymbol.to_list()
+fno   = df[(df.exchange == 'NFO') & (df.instrument_type == 'FUT') & (df.expiry <= front_month)]
+final = pd.concat([fno, stocks_df, indices])
 
+instrumentMap    = dict(zip(final.instrument_token, final.tradingsymbol))
 allinstrumentMap = dict(zip(df.instrument_token, df.tradingsymbol))
+tracked_symbols  = set(final.tradingsymbol.to_list())
 
-df = indices = fno_nearest_expiry = fno = final = instrument_tokens = None
+df = indices = fno = final = stocks_df = None
 
 messageQueue = Queue()
 
-today = date.today()
-
-logging.info(f'Started at {datetime.datetime.now().time()}')
+log.info(f'Started at {datetime.datetime.now().time()}')
 
 
 def time_increment(t, hours=0, minutes=0):
-    hour = t.hour
-    minute = t.minute
-    total_minutes = hour * 60 + minute
-
-    next_time_total_minutes = total_minutes + 60 * hours + minutes
-
-    next_hour = next_time_total_minutes // 60
-    next_minute = next_time_total_minutes % 60
-
-    return time(next_hour, next_minute)
-
-
+    total = t.hour * 60 + t.minute + hours * 60 + minutes
+    return time(total // 60, total % 60)
 
 
 def buildcandle():
+    candlesticks     = {}
+    seen_candle_times = set()
 
-    candlesticks = {}
-    timeArray = []
+    start_time = time(9, 0)
+    nexttime   = time_increment(start_time, 0, 1)
 
-    start_time = time(9,0)
-    nexttime = time_increment(start_time, 0,1)
-
-    logging.info(f'Start time {start_time} Next time {nexttime}')
-
+    log.info(f'Start time {start_time}  Next time {nexttime}')
 
     while datetime.datetime.now().time() < start_time:
+        sleep(0.001)
 
-        sleep(1/1000)
-        
+    log.info(f'Starting candle building at {datetime.datetime.now().time()}')
 
-    logging.info(f'Starting candle building {datetime.datetime.now().time()}')
+    while datetime.datetime.now().time() < time(15, 30):
+        try:
+            raw = messageQueue.get(timeout=1)
+        except Empty:
+            continue
 
-    while datetime.datetime.now().time() < time(15,30):
-
-        bulk_ticks = eval(messageQueue.get())
+        try:
+            bulk_ticks = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            log.warning("Dropping malformed tick message")
+            continue
 
         for tickdata in bulk_ticks:
+            try:
+                candleinst   = tickdata.get('instrument_token', 0)
+                candlesymbol = allinstrumentMap.get(candleinst)
 
-            # last_trade_time = tickdata.get('last_trade_time',0)
+                if candlesymbol not in tracked_symbols:
+                    continue
 
-            candleinst = tickdata.get('instrument_token',0)
-            candlesymbol = allinstrumentMap[candleinst]
+                currentTime  = datetime.datetime.fromisoformat(tickdata['exchange_timestamp']).time()
+                candlelast   = tickdata.get('last_price', 0)
+                candlebuyer  = tickdata.get('total_buy_quantity', 0)
+                candleseller = tickdata.get('total_sell_quantity', 0)
+                candlevolume = tickdata.get('volume_traded', 0)
 
-            if candlesymbol not in stocks:
-                continue
+                if nexttime not in seen_candle_times and currentTime >= nexttime:
+                    log.info(f'Writing candle for {time_increment(nexttime, 0, -1)}')
+                    candle_start = time_increment(nexttime, 0, -1)
+                    Thread(
+                        target=writeToFile,
+                        args=(copy.deepcopy(candlesticks), candle_start),
+                        daemon=True
+                    ).start()
+                    seen_candle_times.add(nexttime)
+                    start_time = nexttime
+                    nexttime   = time_increment(nexttime, 0, 1)
 
-            currentTime = tickdata.get('exchange_timestamp').time()
+                bar = candlesticks.setdefault(candlesymbol, {}).setdefault(start_time, {})
 
-            candlelast = tickdata.get('last_price',0)
+                if 'open' not in bar:
+                    bar['open'] = candlelast
 
-            # Indexes don't have buy and sell quantity so have to fill their variables with 0
-            candlebuyer = tickdata.get('total_buy_quantity',0)
-            candleseller = tickdata.get('total_sell_quantity',0)
-            candlevolume = tickdata.get('volume_traded',0)
+                bar['high']   = max(candlelast, bar.get('high', 0))
+                bar['low']    = min(candlelast, bar.get('low', 100_000_000_000))
+                bar['last']   = candlelast
+                bar['buyer']  = candlebuyer
+                bar['seller'] = candleseller
+                bar['volume'] = candlevolume
 
-
-            if nexttime not in timeArray and currentTime >= nexttime:
-
-                logging.info('Writing Candle File')
-
-                start_time = time_increment(nexttime,0,-1)
-
-                tmp_value = start_time
-                _thread.start_new_thread(writeToFile, (candlesticks.copy(),tmp_value))
-                start_time = nexttime
-
-                timeArray.append(nexttime)
-                nexttime = time_increment(nexttime,0, 1)
-
-
-
-
-    
-            candlesticks[candlesymbol] = candlesticks.setdefault(candlesymbol,{})
-            candlesticks[candlesymbol][start_time] = candlesticks[candlesymbol].setdefault(start_time, {})
-
-
-            if candlesticks[candlesymbol][start_time].get('open') == None:
-            
-                candlesticks[candlesymbol][start_time]['open'] = candlelast
-
-            candlesticks[candlesymbol][start_time]['high'] = candlesticks[candlesymbol][start_time].setdefault('high',0)
-            candlesticks[candlesymbol][start_time]['high'] = max(candlelast, candlesticks[candlesymbol][start_time]['high'])
-
-            candlesticks[candlesymbol][start_time]['low'] = candlesticks[candlesymbol][start_time].setdefault('low',100000000000)
-            candlesticks[candlesymbol][start_time]['low'] =  min(candlelast, candlesticks[candlesymbol][start_time]['low'])
-
-            candlesticks[candlesymbol][start_time]['last'] = candlelast
-
-            candlesticks[candlesymbol][start_time]['buyer'] = candlebuyer
-            candlesticks[candlesymbol][start_time]['seller'] = candleseller
-
-            candlesticks[candlesymbol][start_time]['volume'] = candlevolume
+            except Exception:
+                log.exception(f"Error processing tick (instrument_token={tickdata.get('instrument_token')})")
 
 
+def writeToFile(candles, start_time):
+    today    = date.today()
+    filename = f"candle-{today}.csv"
 
-def writeToFile(candles,start_time):
+    rows       = []
+    redis_msgs = []
 
-    global redis
+    for stockname, timeframes in candles.items():
+        if start_time not in timeframes:
+            continue
+        bar         = timeframes[start_time]
+        candle_close = bar['last']
+        rows.append((
+            start_time.isoformat()[:5],
+            stockname,
+            bar['open'],
+            bar['high'],
+            bar['low'],
+            candle_close,
+            bar['buyer'],
+            bar['seller'],
+            bar['volume'],
+        ))
+        redis_msgs.append({
+            'timestamp':    start_time.isoformat()[:5],
+            'stockname':    stockname,
+            'candle_open':  bar['open'],
+            'candle_high':  bar['high'],
+            'candle_low':   bar['low'],
+            'candle_close': candle_close,
+            'candle_buyer': bar['buyer'],
+            'candle_seller':bar['seller'],
+            'candle_volume':bar['volume'],
+        })
 
-    today = date.today()
+    pipeline = redis_client.pipeline()
+    for msg in redis_msgs:
+        pipeline.publish('1min_candles', json.dumps(msg))
+    pipeline.execute()
 
-    filename = "candle-{}.csv".format(today)
-
-    filelog = open(filename,"a")
-
-
-    for stockname in candles.keys():
-
-        if start_time in candles[stockname]:
-
-            candle_open = candles[stockname][start_time]['open']
-            candle_high = candles[stockname][start_time]['high']
-            candle_low = candles[stockname][start_time]['low']
-            candle_last = candles[stockname][start_time]['last']
-            candle_close = candle_last
-
-            # Buyer and Seller 
-            candle_buyer = candles[stockname][start_time]['buyer']
-            candle_seller = candles[stockname][start_time]['seller']
-            candle_volume = candles[stockname][start_time]['volume']
-
-
-            #To Redis Queue
-
-
-            json_result = json_output(timestamp=start_time.isoformat()[:5],
-                            stockname=stockname,
-                            candle_open=candle_open,
-                            candle_high=candle_high, 
-                            candle_low=candle_low,
-                            candle_close=candle_close,
-                            candle_buyer=candle_buyer,
-                            candle_seller=candle_seller,
-                            candle_volume=candle_volume)
-
-
-            redis.publish('1min_candles', json.dumps(json_result))
-
-
-
-
-            filelog.write("{},{},{},{},{},{},{},{},{}\n".format(start_time.isoformat()[:5],
-                                                                stockname,
-                                                                candle_open,
-                                                                candle_high, 
-                                                                candle_low,
-                                                                candle_close,
-                                                                candle_buyer,
-                                                                candle_seller,
-                                                                candle_volume))
+    try:
+        with open(filename, "a") as f:
+            for row in rows:
+                f.write(",".join(str(v) for v in row) + "\n")
+    except IOError:
+        log.exception(f"Failed to write candle file {filename}")
 
 
-
-
-    filelog.close()
-
-redis = Redis('localhost')
-
-pubsub = redis.pubsub()
-
+redis_client = Redis('localhost')
+pubsub       = redis_client.pubsub()
 pubsub.subscribe('ticks')
 
-_thread.start_new_thread(buildcandle, ())
+Thread(target=buildcandle, daemon=True).start()
+
+log.info("Listening for ticks on Redis channel 'ticks'")
 
 for data in pubsub.listen():
-
-    if data['type'] != "message":
+    if data['type'] != 'message':
         continue
 
-    if data != None and data.get('type', '') == 'message':
+    messageQueue.put(data['data'])
 
-        messageQueue.put(data['data'])
-
-
-    if datetime.datetime.now().time() > time(15,29,59):
-
+    if datetime.datetime.now().time() > time(15, 29, 59):
         break
 
-
-
+log.info("Market closed. Exiting.")

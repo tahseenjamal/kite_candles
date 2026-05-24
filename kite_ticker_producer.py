@@ -1,163 +1,151 @@
-import redis
-from kiteconnect import KiteTicker
-import _thread, sys, json, os
-from datetime import datetime, date, time, timedelta
+import json
+import logging
+import os
 import calendar
-from time import sleep
+from datetime import datetime, date, time, timedelta
+from threading import Thread
 from queue import Queue
+
 import pandas as pd
+import redis as redis_lib
+from kiteconnect import KiteTicker
 
 
-df = pd.read_csv("~/kite_candles/instruments.csv", low_memory = False)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s:%(levelname)s:%(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(f'producer-{date.today()}.log'),
+    ]
+)
+log = logging.getLogger(__name__)
 
-userdata = pd.read_json("~/kite_candles/userdata")
 
-redis_client = redis.Redis('localhost')
+class _DatetimeEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        return super().default(obj)
 
-messageQueue = Queue()
-dataQueue = Queue()
-write_queue = Queue()
 
-instrumentMap = {}
+df = pd.read_csv(os.path.expanduser("~/kite_candles/instruments.csv"), low_memory=False)
+userdata = pd.read_json(os.path.expanduser("~/kite_candles/userdata"))
+
+redis_client = redis_lib.Redis('localhost')
+
+user_id      = userdata['YOURNAME'].user
+api_key      = userdata['YOURNAME'].apikey
+access_token = redis_client.hget(f"token.{user_id}", "access_token").decode("utf-8")
+
 allinstrumentMap = {}
 
-user_id = userdata['YOURNAME'].user
-
-api_key = userdata['YOURNAME'].apikey
-
-access_token = redis_client.hget("token.{}".format(user_id), "access_token").decode("utf-8")
+publish_queue  = Queue()
+tick_hash_queue = Queue()
 
 
-def read_queue():
-
-    global allinstrumentMap
-
-
+def _publish_worker():
     while True:
+        bulk_ticks = publish_queue.get()
+        try:
+            redis_client.publish('ticks', json.dumps(bulk_ticks, cls=_DatetimeEncoder))
+        except Exception:
+            log.exception("Failed to publish ticks to Redis")
 
-        bulk_ticks = messageQueue.get()
 
-        redis_client.publish('ticks', f'{bulk_ticks}')
-
-def data_queue():
-
-    
+def _tick_hash_worker():
     while True:
-            
-        dataToWrite = dataQueue.get()
-
-        timestamp = dataToWrite.get('timestamp')
-
-        stockname = allinstrumentMap.get(dataToWrite.get('instrument_token'))
-
-        open_price = dataToWrite['ohlc'].get('open',0)
-        high_price = dataToWrite['ohlc'].get('high',0)
-        low_price = dataToWrite['ohlc'].get('low',0)
-        close_price = dataToWrite['ohlc'].get('close',0)
-
-        buy_quantity = dataToWrite.get('buy_quantity',0)
-        last_price = dataToWrite.get('last_price',0)
-        sell_quantity = dataToWrite.get('sell_quantity',0)
-        volume = dataToWrite.get('volume',0)
-
-        redis_client.hset("tick_last", stockname, last_price)
-        redis_client.hset("tick_open", stockname, open_price)
-        redis_client.hset("tick_high", stockname, high_price)
-        redis_client.hset("tick_low", stockname, low_price)
-        redis_client.hset("tick_close", stockname, close_price)
-
-        redis_client.hset("tick_buyer", stockname, buy_quantity)
-        redis_client.hset("tick_seller", stockname, sell_quantity)
-
+        tick = tick_hash_queue.get()
+        try:
+            stockname = allinstrumentMap.get(tick.get('instrument_token'))
+            if not stockname:
+                continue
+            ohlc = tick.get('ohlc', {})
+            redis_client.hset("tick_last",   stockname, tick.get('last_price', 0))
+            redis_client.hset("tick_open",   stockname, ohlc.get('open', 0))
+            redis_client.hset("tick_high",   stockname, ohlc.get('high', 0))
+            redis_client.hset("tick_low",    stockname, ohlc.get('low', 0))
+            redis_client.hset("tick_close",  stockname, ohlc.get('close', 0))
+            redis_client.hset("tick_buyer",  stockname, tick.get('buy_quantity', 0))
+            redis_client.hset("tick_seller", stockname, tick.get('sell_quantity', 0))
+        except Exception:
+            log.exception("Failed to write tick hash to Redis")
 
 
 def on_order_update(ws, data):
-
-    global user_id
-
     try:
+        with open(f"{user_id}-order.log", "a") as f:
+            f.write(f"{json.dumps(data)}\n")
+    except Exception:
+        log.exception("Failed to write order update")
 
-        filehandle = open("{}-order.log".format(user_id), "a")
-        filehandle.write("{}\n".format(json.dumps(data)))
-        filehandle.close()
 
-    except:
-        pass
-    
-
-def on_ticks(ws , ticks):
-
-    dt = datetime.now()
-
-    if dt.time() >= time(9,0) and dt.time() < time(15,31):
-
-        messageQueue.put(ticks)
-
+def on_ticks(ws, ticks):
+    now = datetime.now().time()
+    if time(9, 0) <= now < time(15, 31):
+        publish_queue.put(ticks)
+        for tick in ticks:
+            tick_hash_queue.put(tick)
     else:
-        
-        print("exiting")
+        log.info("Market closed, shutting down")
         kws.close()
         os._exit(0)
 
 
-
-
-
 def on_connect(ws, response):
-    
-    global df, instrumentMap, allinstrumentMap
+    global allinstrumentMap
 
-    weekday = datetime.now().weekday()
-
-    expiry = ''
+    today   = datetime.now()
+    weekday = today.weekday()
 
     if weekday <= 3:
-        expiry = (datetime.now().today() + timedelta(days=3 - weekday)).date().isoformat()
+        expiry = (today + timedelta(days=3 - weekday)).date().isoformat()
+    else:
+        expiry = (today + timedelta(days=6)).date().isoformat()
 
-    if weekday >= 4:
-        expiry = (datetime.now().today() + timedelta(days=6)).date().isoformat()
+    front_month = date(today.year, today.month, 1) + timedelta(days=70)
+    front_month = date(
+        front_month.year,
+        front_month.month,
+        calendar.monthrange(front_month.year, front_month.month)[1]
+    ).isoformat()
 
-    fno_nearest_expiry = sorted(df[(df.segment == 'NFO-FUT')].expiry)[0]
+    indices = df[(df.segment == 'INDICES') & df.name.isin(['NIFTY 50', 'NIFTY BANK'])]
+    vix     = df[(df.segment == 'INDICES') & (df.name == 'INDIA VIX')]
+    fno     = df[(df.exchange == 'NFO') & (df.instrument_type == 'FUT') & (df.expiry <= front_month)]
+    stocks  = df[
+        (df.segment == 'NSE') & (df.exchange == 'NSE') &
+        df.name.notna() & df.tradingsymbol.isin(fno.name.to_list())
+    ]
 
-    options = df[(df.expiry <= expiry) & (df.segment == 'NFO-OPT') & df.instrument_type.isin(['CE','PE']) & (df.name.isin(['BANKNIFTY','NIFTY']))]
-
-    front_month = date(datetime.now().date().year, datetime.now().date().month,1) + timedelta(days=70)
-    front_month = date(front_month.year, front_month.month, calendar.monthrange(front_month.year, front_month.month)[1])
-    front_month = front_month.isoformat()
-
-    indices = df[(df.segment == 'INDICES') & (df.name.isin(['NIFTY 50','NIFTY BANK']))]
-    vix = df[(df.segment == 'INDICES') & (df.name == 'INDIA VIX')]
-
-    fno = df[(df.exchange == 'NFO') & (df.instrument_type == 'FUT') & (df.expiry <= front_month)]
-
-    stocks = df[(df.segment== 'NSE') & (df.exchange == 'NSE') & ~(df.name.isna()) & (df.tradingsymbol.isin(fno.name.to_list()))]
-
-    final = pd.concat([fno , stocks, indices, vix])
-
-    instrument_tokens = final.instrument_token.to_list()
-
-    instrumentMap = dict(zip(final.instrument_token, final.tradingsymbol))
+    final = pd.concat([fno, stocks, indices, vix])
 
     allinstrumentMap = dict(zip(df.instrument_token, df.tradingsymbol))
 
+    instrument_tokens = final.instrument_token.to_list()
     ws.subscribe(instrument_tokens)
-    ws.set_mode(ws.MODE_FULL,instrument_tokens)
+    ws.set_mode(ws.MODE_FULL, instrument_tokens)
 
-    print(final.shape[0])
-
-    stocks = indices = fno = final = None
+    log.info(f"Subscribed to {final.shape[0]} instruments")
 
 
-_thread.start_new_thread(read_queue, ())
-_thread.start_new_thread(read_queue, ())
-_thread.start_new_thread(read_queue, ())
-_thread.start_new_thread(read_queue, ())
+def on_error(ws, code, reason):
+    log.error(f"WebSocket error {code}: {reason}")
 
+
+def on_close(ws, code, reason):
+    log.info(f"WebSocket closed — code: {code}, reason: {reason}")
+
+
+for _ in range(4):
+    Thread(target=_publish_worker, daemon=True).start()
+
+Thread(target=_tick_hash_worker, daemon=True).start()
 
 kws = KiteTicker(api_key, access_token)
-kws.on_ticks = on_ticks
+kws.on_ticks        = on_ticks
+kws.on_connect      = on_connect
 kws.on_order_update = on_order_update
-kws.on_connect = on_connect
+kws.on_error        = on_error
+kws.on_close        = on_close
 kws.connect()
-
-

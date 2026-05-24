@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kite Candles — Architecture &amp; Documentation</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    /* ── Reset & Base ───────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:         #0f1117;
+      --surface:    #1a1d27;
+      --surface2:   #232637;
+      --border:     #2e3250;
+      --accent:     #7c6af7;
+      --accent2:    #56cfb2;
+      --accent3:    #f5a623;
+      --text:       #e2e4f0;
+      --muted:      #8890b5;
+      --code-bg:    #12151f;
+      --red:        #ff6b6b;
+      --green:      #56cfb2;
+      --radius:     10px;
+      --font-mono:  'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+      --font-sans:  'Inter', 'Segoe UI', system-ui, sans-serif;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 15px;
+      line-height: 1.75;
+    }
+
+    /* ── Layout ─────────────────────────────────────────────── */
+    .layout { display: flex; min-height: 100vh; }
+
+    nav {
+      width: 260px;
+      flex-shrink: 0;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      padding: 2rem 1.25rem;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+    }
+
+    nav .logo {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--accent);
+      margin-bottom: 0.25rem;
+      letter-spacing: -0.02em;
+    }
+    nav .logo-sub { font-size: 0.78rem; color: var(--muted); margin-bottom: 2rem; }
+
+    nav ul { list-style: none; }
+    nav ul li { margin: 0.1rem 0; }
+    nav ul li a {
+      display: block;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 0.82rem;
+      padding: 0.35rem 0.6rem;
+      border-radius: 6px;
+      transition: background 0.15s, color 0.15s;
+    }
+    nav ul li a:hover { background: var(--surface2); color: var(--text); }
+    nav ul li.section-head a {
+      color: var(--text);
+      font-weight: 600;
+      font-size: 0.85rem;
+      margin-top: 1rem;
+    }
+
+    main {
+      flex: 1;
+      padding: 3rem 3.5rem;
+      max-width: 1100px;
+    }
+
+    /* ── Typography ─────────────────────────────────────────── */
+    h1 {
+      font-size: 2.2rem;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 0.5rem;
+    }
+    .subtitle { color: var(--muted); font-size: 1rem; margin-bottom: 3rem; }
+
+    h2 {
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: var(--text);
+      margin: 3rem 0 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--border);
+      letter-spacing: -0.02em;
+    }
+    h3 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--accent2);
+      margin: 2rem 0 0.75rem;
+    }
+    h4 {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--accent3);
+      margin: 1.5rem 0 0.5rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    p { margin-bottom: 1rem; color: var(--text); }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ── Code ───────────────────────────────────────────────── */
+    code {
+      background: var(--code-bg);
+      color: var(--accent2);
+      font-family: var(--font-mono);
+      font-size: 0.85em;
+      padding: 0.15em 0.45em;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+    }
+
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem 1.5rem;
+      overflow-x: auto;
+      margin: 1rem 0 1.5rem;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.65;
+      color: #c9d1d9;
+    }
+    pre code { background: none; border: none; padding: 0; color: inherit; font-size: inherit; }
+
+    /* ── Tables ─────────────────────────────────────────────── */
+    .table-wrap { overflow-x: auto; margin: 1rem 0 1.5rem; border-radius: var(--radius); border: 1px solid var(--border); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+    thead tr { background: var(--surface2); }
+    th {
+      text-align: left;
+      padding: 0.75rem 1rem;
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      border-bottom: 1px solid var(--border);
+    }
+    td {
+      padding: 0.7rem 1rem;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+      vertical-align: top;
+    }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover { background: var(--surface2); }
+    td code { font-size: 0.8rem; }
+
+    /* ── Cards ──────────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.5rem;
+      margin: 1rem 0 1.5rem;
+    }
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+      margin: 1rem 0 1.5rem;
+    }
+    .card-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.2rem 1.4rem;
+    }
+    .card-item .card-title {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--muted);
+      margin-bottom: 0.4rem;
+    }
+    .card-item .card-value {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .card-item.accent  { border-left: 3px solid var(--accent); }
+    .card-item.accent2 { border-left: 3px solid var(--accent2); }
+    .card-item.accent3 { border-left: 3px solid var(--accent3); }
+
+    /* ── Badges ─────────────────────────────────────────────── */
+    .badge {
+      display: inline-block;
+      padding: 0.18em 0.6em;
+      border-radius: 4px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .badge-purple { background: rgba(124,106,247,0.18); color: var(--accent); }
+    .badge-teal   { background: rgba(86,207,178,0.18);  color: var(--accent2); }
+    .badge-orange { background: rgba(245,166,35,0.18);  color: var(--accent3); }
+    .badge-red    { background: rgba(255,107,107,0.18); color: var(--red); }
+
+    /* ── Diagrams ───────────────────────────────────────────── */
+    .diagram-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 2rem;
+      margin: 1rem 0 1.5rem;
+      overflow-x: auto;
+      display: flex;
+      justify-content: center;
+    }
+    .diagram-wrap .mermaid { max-width: 100%; }
+
+    /* ── Thread diagram ─────────────────────────────────────── */
+    .thread-tree {
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem 1.5rem;
+      color: #c9d1d9;
+      line-height: 1.9;
+    }
+    .thread-tree .t-proc  { color: var(--accent3); font-weight: 700; }
+    .thread-tree .t-main  { color: var(--accent); }
+    .thread-tree .t-work  { color: var(--accent2); }
+    .thread-tree .t-comm  { color: var(--muted); }
+
+    /* ── Flow boxes ─────────────────────────────────────────── */
+    .flow {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      flex-wrap: wrap;
+      margin: 1rem 0 1.5rem;
+      font-size: 0.83rem;
+    }
+    .flow-box {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.6rem 1rem;
+      color: var(--text);
+      font-family: var(--font-mono);
+      white-space: nowrap;
+    }
+    .flow-box.accent  { border-color: var(--accent);  color: var(--accent);  background: rgba(124,106,247,0.1); }
+    .flow-box.accent2 { border-color: var(--accent2); color: var(--accent2); background: rgba(86,207,178,0.1); }
+    .flow-box.accent3 { border-color: var(--accent3); color: var(--accent3); background: rgba(245,166,35,0.1); }
+    .flow-arrow { color: var(--muted); padding: 0 0.4rem; font-size: 1rem; }
+
+    /* ── Wire format JSON ───────────────────────────────────── */
+    .json-key    { color: #79b8ff; }
+    .json-str    { color: #9ecbff; }
+    .json-num    { color: #f8c555; }
+    .json-bool   { color: var(--accent3); }
+    .json-brace  { color: var(--muted); }
+
+    /* ── Section anchor links ───────────────────────────────── */
+    h2, h3 { scroll-margin-top: 1.5rem; }
+
+    /* ── Callout ─────────────────────────────────────────────── */
+    .callout {
+      border-left: 3px solid var(--accent3);
+      background: rgba(245,166,35,0.07);
+      border-radius: 0 var(--radius) var(--radius) 0;
+      padding: 0.85rem 1.2rem;
+      margin: 1rem 0 1.5rem;
+      font-size: 0.88rem;
+      color: var(--text);
+    }
+    .callout strong { color: var(--accent3); }
+  </style>
+</head>
+<body>
+
+<div class="layout">
+
+  <!-- ── Sidebar navigation ──────────────────────────────────── -->
+  <nav>
+    <div class="logo">Kite Candles</div>
+    <div class="logo-sub">Real-Time OHLCV Generator</div>
+    <ul>
+      <li class="section-head"><a href="#overview">Overview</a></li>
+      <li><a href="#arch-diagram">Architecture Diagram</a></li>
+      <li><a href="#sequence-diagram">Sequence Diagram</a></li>
+      <li class="section-head"><a href="#modules">Modules</a></li>
+      <li><a href="#mod-set-token">set_token.py</a></li>
+      <li><a href="#mod-instruments">instruments_generator.py</a></li>
+      <li><a href="#mod-producer">kite_ticker_producer.py</a></li>
+      <li><a href="#mod-consumer">min1_ticks.py</a></li>
+      <li class="section-head"><a href="#threading">Threading Model</a></li>
+      <li class="section-head"><a href="#wire">Wire Formats</a></li>
+      <li><a href="#wire-ticks">ticks channel</a></li>
+      <li><a href="#wire-candles">1min_candles channel</a></li>
+      <li><a href="#wire-csv">CSV file</a></li>
+      <li class="section-head"><a href="#redis-keys">Redis Keys</a></li>
+      <li class="section-head"><a href="#setup">Setup &amp; Config</a></li>
+      <li class="section-head"><a href="#running">Running</a></li>
+      <li class="section-head"><a href="#extending">Extending</a></li>
+    </ul>
+  </nav>
+
+  <!-- ── Main content ────────────────────────────────────────── -->
+  <main>
+
+    <h1>Kite Candles</h1>
+    <p class="subtitle">
+      Streams live tick data from the Zerodha Kite WebSocket, fans it through Redis Pub/Sub,
+      and assembles OHLCV candle bars in real time — one producer feeding unlimited timeframe consumers.
+    </p>
+
+    <!-- ── Overview ─────────────────────────────────────────── -->
+    <section id="overview">
+      <h2>Overview</h2>
+      <div class="card-grid">
+        <div class="card-item accent">
+          <div class="card-title">Data Source</div>
+          <div class="card-value">Kite WebSocket (Full mode)</div>
+        </div>
+        <div class="card-item accent2">
+          <div class="card-title">Message Bus</div>
+          <div class="card-value">Redis Pub/Sub</div>
+        </div>
+        <div class="card-item accent3">
+          <div class="card-title">Output</div>
+          <div class="card-value">1-min OHLCV bars → CSV + Redis channel</div>
+        </div>
+        <div class="card-item accent">
+          <div class="card-title">Language</div>
+          <div class="card-value">Python 3 — threading, Queue, redis-py</div>
+        </div>
+      </div>
+
+      <p>
+        The system is split into two independently deployable processes connected by a Redis channel.
+        The <strong>producer</strong> owns the WebSocket connection and publishes every tick batch as JSON.
+        Each <strong>consumer</strong> (one per timeframe) subscribes to that channel and builds its own candles,
+        writing completed bars to both Redis and a CSV file.
+      </p>
+
+      <div class="flow">
+        <div class="flow-box accent">Kite WebSocket</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box">kite_ticker_producer.py</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box accent2">Redis: ticks</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box">min1_ticks.py</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box accent3">1min_candles + CSV</div>
+      </div>
+    </section>
+
+    <!-- ── Architecture diagram ─────────────────────────────── -->
+    <section id="arch-diagram">
+      <h2>Architectural Diagram</h2>
+      <div class="diagram-wrap">
+        <div class="mermaid">
+flowchart TB
+    subgraph Kite["Kite Connect Platform"]
+        KiteREST["REST API\nGET /instruments"]
+        KiteWS["WebSocket Ticker\nFull Mode Feed"]
+    end
+
+    subgraph Setup["One-time / Daily Setup"]
+        set_token["set_token.py\nWrites access_token to Redis"]
+        instruments_gen["instruments_generator.py\nFetches &amp; saves instruments.csv"]
+    end
+
+    subgraph Producer["kite_ticker_producer.py  (starts ~08:55)"]
+        on_connect_cb["on_connect()\nSubscribes instrument tokens"]
+        on_ticks_cb["on_ticks()\nReceives bulk tick batches"]
+        pub_q["publish_queue\nQueue"]
+        hash_q["tick_hash_queue\nQueue"]
+        pub_w["_publish_worker ×4\njson.dumps → Redis PUBLISH"]
+        hash_w["_tick_hash_worker ×1\nRedis HSET per field"]
+    end
+
+    subgraph RedisLayer["Redis"]
+        r_token["Hash  token.{user_id}\naccess_token / public_token"]
+        r_ticks["Pub/Sub  ticks\nJSON list of tick dicts"]
+        r_hashes["Hashes\ntick_last · tick_open · tick_high\ntick_low · tick_close\ntick_buyer · tick_seller"]
+    end
+
+    subgraph Consumer["multi-time/1min/min1_ticks.py  (starts ~08:55)"]
+        listener["Main Thread\npubsub.listen()"]
+        msg_q["messageQueue\nQueue"]
+        build["buildcandle() Thread\naccumulates OHLCV bars"]
+        write["writeToFile() Thread\nspawned per minute boundary"]
+    end
+
+    subgraph Output["Output"]
+        r_candles["Pub/Sub  1min_candles\nJSON candle per symbol"]
+        csv["candle-YYYY-MM-DD.csv\ntime,sym,O,H,L,C,buy,sell,vol"]
+    end
+
+    KiteREST -->|"CSV download"| instruments_gen
+    instruments_gen -->|"instruments.csv"| on_connect_cb
+    set_token -->|"HSET access_token"| r_token
+    r_token -->|"read at startup"| Producer
+
+    KiteWS -->|"on_ticks callback"| on_ticks_cb
+    on_ticks_cb --> pub_q
+    on_ticks_cb --> hash_q
+    pub_q --> pub_w
+    hash_q --> hash_w
+    pub_w -->|"PUBLISH JSON"| r_ticks
+    hash_w -->|"HSET"| r_hashes
+
+    r_ticks -->|"subscribe"| listener
+    listener --> msg_q
+    msg_q -->|"get(timeout=1)"| build
+    build -->|"deepcopy every minute"| write
+    write -->|"PIPELINE PUBLISH"| r_candles
+    write -->|"append"| csv
+
+    style Kite      fill:#1a1d27,stroke:#7c6af7,color:#e2e4f0
+    style Setup     fill:#1a1d27,stroke:#f5a623,color:#e2e4f0
+    style Producer  fill:#1a1d27,stroke:#56cfb2,color:#e2e4f0
+    style RedisLayer fill:#1a1d27,stroke:#ff6b6b,color:#e2e4f0
+    style Consumer  fill:#1a1d27,stroke:#56cfb2,color:#e2e4f0
+    style Output    fill:#1a1d27,stroke:#f5a623,color:#e2e4f0
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Sequence diagram ──────────────────────────────────── -->
+    <section id="sequence-diagram">
+      <h2>Sequence Diagram</h2>
+      <div class="diagram-wrap">
+        <div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant Cron  as Cron / Operator
+    participant IG    as instruments_generator
+    participant ST    as set_token
+    participant KR    as Kite REST API
+    participant KWS   as Kite WebSocket
+    participant Prod  as kite_ticker_producer
+    participant Redis as Redis
+    participant Cons  as min1_ticks
+    participant CSV   as candle-DATE.csv
+
+    Note over Cron: Daily setup (~08:45)
+    Cron->>IG: python instruments_generator.py
+    IG->>KR: GET /instruments?api_key=…
+    KR-->>IG: instruments CSV
+    IG->>IG: write ~/kite_candles/instruments.csv
+
+    Cron->>ST: python set_token.py
+    ST->>Redis: HSET token.{user_id} access_token
+
+    Note over Cron: Start services (~08:55)
+    Cron->>Prod: python kite_ticker_producer.py
+    Prod->>Redis: HGET token.{user_id} access_token
+    Redis-->>Prod: access_token
+    Prod->>Prod: start 4× _publish_worker threads
+    Prod->>Prod: start 1× _tick_hash_worker thread
+    Prod->>KWS: KiteTicker.connect()
+    KWS-->>Prod: on_connect()
+    Prod->>Prod: compute expiry window and front_month
+    Prod->>KWS: subscribe(instrument_tokens)
+    Prod->>KWS: set_mode(MODE_FULL, tokens)
+
+    Cron->>Cons: python min1_ticks.py
+    Cons->>Redis: SUBSCRIBE ticks
+    Cons->>Cons: start buildcandle() thread
+
+    Note over KWS,CSV: Market open — 09:00 to 15:30
+
+    loop Every ~100 ms (bulk tick batch)
+        KWS->>Prod: on_ticks(bulk_ticks)
+        Prod->>Prod: publish_queue.put(bulk_ticks)
+        Prod->>Prod: tick_hash_queue.put(tick) per tick
+        par _publish_worker ×4
+            Prod->>Redis: PUBLISH ticks JSON
+        and _tick_hash_worker
+            Prod->>Redis: HSET tick_last / open / high / low / close
+            Prod->>Redis: HSET tick_buyer / tick_seller
+        end
+    end
+
+    loop Redis subscriber loop (main thread)
+        Redis-->>Cons: message on channel ticks
+        Cons->>Cons: messageQueue.put(data)
+    end
+
+    loop buildcandle thread
+        Cons->>Cons: json.loads(raw)
+        loop Each tick in batch
+            Cons->>Cons: update OHLCV bar for symbol
+            alt exchange_timestamp >= nexttime
+                Cons->>Cons: copy.deepcopy(candlesticks)
+                Cons->>Cons: spawn writeToFile(snapshot, candle_start)
+                Cons->>Cons: advance start_time and nexttime
+            end
+        end
+    end
+
+    loop writeToFile thread — once per minute
+        Cons->>Redis: PIPELINE PUBLISH 1min_candles (all symbols)
+        Redis-->>Cons: pipeline ACK
+        Cons->>CSV: append rows
+    end
+
+    Note over Cons: 15:30 reached — main loop exits
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Modules ───────────────────────────────────────────── -->
+    <section id="modules">
+      <h2>Module Descriptions</h2>
+
+      <!-- set_token.py -->
+      <div id="mod-set-token">
+        <h3>set_token.py <span class="badge badge-orange">one-time daily</span></h3>
+        <p>
+          Stores today's Kite session token in Redis so all other processes can read it
+          without touching the filesystem. Edit the two token constants at the top, then run once
+          after completing the Kite login flow.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Detail</th><th>Value</th></tr></thead>
+            <tbody>
+              <tr><td>Reads from</td><td><code>~/kite_candles/userdata</code></td></tr>
+              <tr><td>Writes to</td><td>Redis hash <code>token.{user_id}</code></td></tr>
+              <tr><td>Fields</td><td><code>access_token</code>, <code>public_token</code></td></tr>
+              <tr><td>When to run</td><td>Once each morning after Kite login</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- instruments_generator.py -->
+      <div id="mod-instruments">
+        <h3>instruments_generator.py <span class="badge badge-orange">daily cron</span></h3>
+        <p>
+          Downloads the full NSE/NFO instrument master from the Kite REST API.
+          The CSV maps <code>instrument_token</code> integers (used in WebSocket ticks) to
+          human-readable <code>tradingsymbol</code> strings. Both the producer and consumer
+          read this file at startup.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Detail</th><th>Value</th></tr></thead>
+            <tbody>
+              <tr><td>Endpoint</td><td><code>GET /instruments</code></td></tr>
+              <tr><td>Output</td><td><code>~/kite_candles/instruments.csv</code></td></tr>
+              <tr><td>Retry behaviour</td><td>Polls every 15 s until response &gt; 2 048 bytes</td></tr>
+              <tr><td>When to run</td><td>Daily before market open (crontab 06:00)</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- kite_ticker_producer.py -->
+      <div id="mod-producer">
+        <h3>kite_ticker_producer.py <span class="badge badge-purple">long-running</span></h3>
+        <p>
+          Maintains a persistent WebSocket connection to Kite, receives every market tick in real time,
+          and fans each batch out to two Redis destinations simultaneously.
+        </p>
+
+        <h4>Startup sequence</h4>
+        <ol style="padding-left:1.4rem;margin-bottom:1rem;color:var(--text);font-size:0.9rem;">
+          <li>Reads <code>userdata</code> for <code>api_key</code> and <code>user_id</code>.</li>
+          <li>Reads <code>access_token</code> from Redis hash <code>token.{user_id}</code>.</li>
+          <li>Starts <strong>4 publish worker threads</strong> all draining a single <code>publish_queue</code>.</li>
+          <li>Starts <strong>1 tick-hash worker thread</strong> draining <code>tick_hash_queue</code>.</li>
+          <li>Opens the Kite WebSocket and registers all callbacks.</li>
+        </ol>
+
+        <h4>on_connect — instrument subscription</h4>
+        <div class="card">
+          <ul style="padding-left:1.2rem;color:var(--text);font-size:0.88rem;line-height:2;">
+            <li>Computes the nearest weekly options expiry and front futures month.</li>
+            <li>Builds a combined universe: NIFTY/BANKNIFTY options + front-month futures + NSE cash equities + NIFTY 50 / NIFTY BANK / INDIA VIX indices.</li>
+            <li>Subscribes all tokens in <code>MODE_FULL</code> (full depth + OHLC + volume).</li>
+            <li>Builds <code>allinstrumentMap</code> covering the <em>entire</em> instrument master.</li>
+          </ul>
+        </div>
+
+        <h4>on_ticks — per-batch callback</h4>
+        <p style="font-size:0.88rem;">
+          Runs on the WebSocket thread — must be fast with no I/O.
+          Puts the entire batch into <code>publish_queue</code> and each individual tick into <code>tick_hash_queue</code>.
+          Calls <code>os._exit(0)</code> if invoked outside 09:00–15:30.
+        </p>
+
+        <h4>_publish_worker (×4 threads)</h4>
+        <p style="font-size:0.88rem;">
+          Serialises each tick batch to JSON with a custom <code>_DatetimeEncoder</code>
+          (converts <code>datetime</code>/<code>date</code> objects to ISO-8601 strings),
+          then publishes to Redis channel <code>ticks</code>.
+          Four threads share one queue — if one publish blocks on network, the others continue.
+        </p>
+
+        <h4>_tick_hash_worker (×1 thread)</h4>
+        <p style="font-size:0.88rem;">
+          Writes per-symbol real-time price fields into dedicated Redis hashes,
+          enabling downstream consumers to query the last price of any symbol without
+          processing the full tick stream.
+        </p>
+      </div>
+
+      <!-- min1_ticks.py -->
+      <div id="mod-consumer">
+        <h3>multi-time/1min/min1_ticks.py <span class="badge badge-teal">long-running</span></h3>
+        <p>
+          Subscribes to the <code>ticks</code> Redis channel, maintains a live OHLCV state machine
+          for every tracked symbol, and emits a completed 1-minute bar each time a minute boundary is crossed.
+        </p>
+
+        <h4>Startup sequence</h4>
+        <ol style="padding-left:1.4rem;margin-bottom:1rem;color:var(--text);font-size:0.9rem;">
+          <li>Reads <code>instruments.csv</code> to build <code>allinstrumentMap</code> and <code>tracked_symbols</code> (a set for O(1) lookups).</li>
+          <li>Subscribes to Redis channel <code>ticks</code>.</li>
+          <li>Starts the <code>buildcandle()</code> thread.</li>
+          <li>Main thread enters the <code>pubsub.listen()</code> loop, feeding <code>messageQueue</code>.</li>
+        </ol>
+
+        <h4>OHLCV state machine</h4>
+        <pre><code>candlesticks[symbol][start_time] = {
+    "open":   first last_price seen in the period,
+    "high":   running maximum,
+    "low":    running minimum,
+    "last":   most recent last_price  (= close at boundary),
+    "buyer":  latest total_buy_quantity,
+    "seller": latest total_sell_quantity,
+    "volume": latest volume_traded
+}</code></pre>
+
+        <h4>Candle boundary logic</h4>
+        <p style="font-size:0.88rem;">
+          <code>nexttime</code> tracks when the current bar should close (09:01, 09:02, …).
+          When <code>exchange_timestamp</code> of any incoming tick ≥ <code>nexttime</code>,
+          a <code>copy.deepcopy</code> snapshot is taken and handed to a fresh <code>writeToFile</code> thread.
+          <code>seen_candle_times</code> (a <code>set</code>) guards against re-triggering on duplicate timestamps.
+        </p>
+
+        <h4>writeToFile thread (one per minute)</h4>
+        <p style="font-size:0.88rem;">
+          Receives a <strong>deep-copied</strong> snapshot so <code>buildcandle</code> can immediately continue
+          building the next bar. Batches all Redis <code>PUBLISH</code> calls into a single pipeline
+          (one round-trip), then appends all rows to the daily CSV in one <code>with open(...)</code> block.
+        </p>
+
+        <div class="callout">
+          <strong>Error isolation:</strong> every tick is wrapped in <code>try/except</code>.
+          A malformed tick logs the exception and is skipped — the thread never crashes and
+          missing ticks only produce slightly imprecise bars rather than data loss.
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Threading model ──────────────────────────────────── -->
+    <section id="threading">
+      <h2>Threading Model</h2>
+      <div class="thread-tree">
+<span class="t-proc">Main Process</span>
+│
+├── <span class="t-main">Main Thread  [producer]</span>
+│   └── KiteTicker.connect() — blocks; drives the WebSocket event loop
+│
+├── <span class="t-main">Main Thread  [consumer]</span>
+│   └── pubsub.listen() — blocks; feeds messageQueue
+│
+├── <span class="t-work">_publish_worker  ×4  [producer, daemon]</span>
+│   └── publish_queue.get() → json.dumps → Redis PUBLISH ticks
+│
+├── <span class="t-work">_tick_hash_worker  ×1  [producer, daemon]</span>
+│   └── tick_hash_queue.get() → Redis HSET per field
+│
+├── <span class="t-work">buildcandle()  ×1  [consumer, daemon]</span>
+│   └── messageQueue.get(timeout=1) → OHLCV state machine
+│
+└── <span class="t-work">writeToFile()  ×N  [consumer, daemon — one spawned per minute boundary]</span>
+    └── deepcopy snapshot → Redis pipeline PUBLISH + CSV append
+
+<span class="t-comm">
+All workers are daemon threads — killed automatically when the main thread exits.
+Queues provide the only synchronisation; there are no explicit locks.
+</span>
+      </div>
+    </section>
+
+    <!-- ── Wire formats ──────────────────────────────────────── -->
+    <section id="wire">
+      <h2>Wire Formats</h2>
+
+      <div id="wire-ticks">
+        <h3>Redis channel: <code>ticks</code></h3>
+        <p>Published by <code>kite_ticker_producer.py</code>. A JSON-encoded list of tick dicts — one list per <code>on_ticks</code> callback invocation.</p>
+        <pre><code><span class="json-brace">[</span>
+  <span class="json-brace">{</span>
+    <span class="json-key">"instrument_token"</span>:    <span class="json-num">256265</span>,
+    <span class="json-key">"exchange_timestamp"</span>:   <span class="json-str">"2024-01-15T09:15:03.123456"</span>,
+    <span class="json-key">"last_price"</span>:           <span class="json-num">21750.50</span>,
+    <span class="json-key">"total_buy_quantity"</span>:   <span class="json-num">123400</span>,
+    <span class="json-key">"total_sell_quantity"</span>:  <span class="json-num">98700</span>,
+    <span class="json-key">"volume_traded"</span>:        <span class="json-num">4500200</span>,
+    <span class="json-key">"ohlc"</span>: <span class="json-brace">{</span>
+      <span class="json-key">"open"</span>:  <span class="json-num">21600.00</span>,
+      <span class="json-key">"high"</span>:  <span class="json-num">21800.00</span>,
+      <span class="json-key">"low"</span>:   <span class="json-num">21550.00</span>,
+      <span class="json-key">"close"</span>: <span class="json-num">21600.00</span>
+    <span class="json-brace">}</span>
+  <span class="json-brace">}</span>
+<span class="json-brace">]</span></code></pre>
+      </div>
+
+      <div id="wire-candles">
+        <h3>Redis channel: <code>1min_candles</code></h3>
+        <p>Published by <code>min1_ticks.py</code>. One JSON message per symbol per completed minute.</p>
+        <pre><code><span class="json-brace">{</span>
+  <span class="json-key">"timestamp"</span>:    <span class="json-str">"09:15"</span>,
+  <span class="json-key">"stockname"</span>:    <span class="json-str">"NIFTY 50"</span>,
+  <span class="json-key">"candle_open"</span>:  <span class="json-num">21600.00</span>,
+  <span class="json-key">"candle_high"</span>:  <span class="json-num">21750.50</span>,
+  <span class="json-key">"candle_low"</span>:   <span class="json-num">21580.00</span>,
+  <span class="json-key">"candle_close"</span>: <span class="json-num">21750.50</span>,
+  <span class="json-key">"candle_buyer"</span>: <span class="json-num">123400</span>,
+  <span class="json-key">"candle_seller"</span>:<span class="json-num">98700</span>,
+  <span class="json-key">"candle_volume"</span>:<span class="json-num">4500200</span>
+<span class="json-brace">}</span></code></pre>
+      </div>
+
+      <div id="wire-csv">
+        <h3>CSV: <code>candle-YYYY-MM-DD.csv</code></h3>
+        <p>Appended by <code>writeToFile</code> each minute. No header row.</p>
+        <pre><code>09:15,NIFTY 50,21600.0,21750.5,21580.0,21750.5,123400,98700,4500200
+09:15,RELIANCE,2450.0,2462.5,2448.0,2458.0,34200,28100,980000
+09:16,NIFTY 50,21750.5,21780.0,21740.0,21770.0,145000,112000,5100000</code></pre>
+        <p style="font-size:0.85rem;color:var(--muted);">Columns: <code>time, symbol, open, high, low, close, buyers, sellers, volume</code></p>
+      </div>
+    </section>
+
+    <!-- ── Redis keys ────────────────────────────────────────── -->
+    <section id="redis-keys">
+      <h2>Redis Key Reference</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Key / Pattern</th><th>Type</th><th>Written by</th><th>Description</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>token.{user_id}</code></td><td>Hash</td><td>set_token.py</td><td>Auth tokens for a user</td></tr>
+            <tr><td><code>ticks</code></td><td>Pub/Sub</td><td>kite_ticker_producer</td><td>Raw tick batches (JSON list)</td></tr>
+            <tr><td><code>tick_last</code></td><td>Hash</td><td>kite_ticker_producer</td><td>Latest last_price per symbol</td></tr>
+            <tr><td><code>tick_open</code></td><td>Hash</td><td>kite_ticker_producer</td><td>Day open per symbol</td></tr>
+            <tr><td><code>tick_high</code></td><td>Hash</td><td>kite_ticker_producer</td><td>Day high per symbol</td></tr>
+            <tr><td><code>tick_low</code></td><td>Hash</td><td>kite_ticker_producer</td><td>Day low per symbol</td></tr>
+            <tr><td><code>tick_close</code></td><td>Hash</td><td>kite_ticker_producer</td><td>Previous close per symbol</td></tr>
+            <tr><td><code>tick_buyer</code></td><td>Hash</td><td>kite_ticker_producer</td><td>Total buy quantity per symbol</td></tr>
+            <tr><td><code>tick_seller</code></td><td>Hash</td><td>kite_ticker_producer</td><td>Total sell quantity per symbol</td></tr>
+            <tr><td><code>1min_candles</code></td><td>Pub/Sub</td><td>min1_ticks</td><td>Completed 1-min bars (JSON)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ── Setup ─────────────────────────────────────────────── -->
+    <section id="setup">
+      <h2>Configuration &amp; Setup</h2>
+
+      <h3>Prerequisites</h3>
+      <pre><code>pip install kiteconnect redis pandas requests
+redis-server   # must be running locally</code></pre>
+
+      <h3><code>~/kite_candles/userdata</code> format</h3>
+      <p>A JSON file read by pandas. Each top-level key is a user profile label used in all scripts.</p>
+      <pre><code><span class="json-brace">{</span>
+  <span class="json-key">"YOURNAME"</span>: <span class="json-brace">{</span>
+    <span class="json-key">"user"</span>:   <span class="json-str">"AB1234"</span>,
+    <span class="json-key">"apikey"</span>: <span class="json-str">"your_api_key_here"</span>
+  <span class="json-brace">}</span>
+<span class="json-brace">}</span></code></pre>
+      <p style="font-size:0.88rem;color:var(--muted);">
+        Replace <code>YOURNAME</code> with any label. It is used as the pandas column name in all four scripts.
+      </p>
+    </section>
+
+    <!-- ── Running ───────────────────────────────────────────── -->
+    <section id="running">
+      <h2>Running the System</h2>
+      <p>Run steps in order. Steps 1–2 are daily; steps 3–4 run each trading day.</p>
+
+      <h4>Step 1 — Generate instrument list (daily, ~06:00)</h4>
+      <pre><code>python ~/kite_candles/instruments_generator.py</code></pre>
+
+      <h4>Step 2 — Store today's access token</h4>
+      <pre><code># Edit set_token.py with today's token, then:
+python ~/kite_candles/set_token.py</code></pre>
+
+      <h4>Step 3 — Start the producer (~08:55)</h4>
+      <pre><code>python ~/kite_candles/kite_ticker_producer.py</code></pre>
+
+      <h4>Step 4 — Start the 1-minute consumer (~08:55)</h4>
+      <pre><code>python ~/kite_candles/multi-time/1min/min1_ticks.py</code></pre>
+
+      <p>Both processes shut themselves down at market close (15:30–15:31). Schedule via crontab:</p>
+      <pre><code>00 6  * * 1-5  python ~/kite_candles/instruments_generator.py
+55 8  * * 1-5  python ~/kite_candles/kite_ticker_producer.py
+55 8  * * 1-5  python ~/kite_candles/multi-time/1min/min1_ticks.py</code></pre>
+    </section>
+
+    <!-- ── Extending ─────────────────────────────────────────── -->
+    <section id="extending">
+      <h2>Extending to Other Timeframes</h2>
+      <p>
+        The producer is completely unchanged. Copy <code>min1_ticks.py</code> to a new directory
+        and change two values:
+      </p>
+      <pre><code># For a 5-minute consumer:
+
+# 1. Change the candle width (two places in buildcandle)
+nexttime = time_increment(start_time, 0, 5)   # was 1
+nexttime = time_increment(nexttime,   0, 5)   # was 1
+
+# 2. Change the output channel and filename
+pipeline.publish('5min_candles', ...)          # was 1min_candles
+filename = f"candle5min-{today}.csv"           # was candle-…</code></pre>
+      <p>
+        Start as many consumer processes as needed — each subscribes to the same <code>ticks</code>
+        channel independently. Redis fan-out delivers every message to every subscriber with no
+        contention and no changes to the producer.
+      </p>
+    </section>
+
+  </main>
+</div>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      background:       '#1a1d27',
+      primaryColor:     '#232637',
+      primaryTextColor: '#e2e4f0',
+      primaryBorderColor: '#7c6af7',
+      lineColor:        '#8890b5',
+      secondaryColor:   '#1a1d27',
+      tertiaryColor:    '#12151f',
+      edgeLabelBackground: '#1a1d27',
+      clusterBkg:       '#1a1d27',
+      clusterBorder:    '#2e3250',
+      titleColor:       '#e2e4f0',
+      nodeTextColor:    '#e2e4f0',
+      fontFamily:       'Inter, system-ui, sans-serif',
+    },
+    flowchart: { curve: 'basis', padding: 20 },
+    sequence:  { actorMargin: 60, messageMargin: 40, mirrorActors: false }
+  });
+</script>
+
+</body>
+</html>
