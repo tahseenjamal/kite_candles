@@ -25,13 +25,13 @@ Streams live tick data from the **Zerodha Kite WebSocket** feed, fans it out thr
 ┌──────────────────────────────────────────────────────────────────────┐
 │                        Kite Connect Platform                         │
 │                                                                      │
-│   ┌─────────────────────────┐    ┌──────────────────────────────┐   │
-│   │  REST API               │    │  WebSocket Ticker (WSS)      │   │
-│   │  GET /instruments       │    │  Full mode — all fields       │   │
-│   └────────────┬────────────┘    └──────────────┬───────────────┘   │
-└────────────────│──────────────────────────────── │ ──────────────────┘
-                 │                                  │
-                 ▼                                  ▼
+│   ┌─────────────────────────┐    ┌──────────────────────────────┐    │
+│   │  REST API               │    │  WebSocket Ticker (WSS)      │    │
+│   │  GET /instruments       │    │  Full mode — all fields      │    │
+│   └────────────┬────────────┘    └──────────────┬───────────────┘    │
+└────────────────│────────────────────────────────│ ───────────────────┘
+                 │                                │
+                 ▼                                ▼
    ┌─────────────────────────┐      ┌───────────────────────────────────┐
    │ instruments_generator   │      │      kite_ticker_producer.py      │
    │ .py                     │      │                                   │
@@ -45,22 +45,22 @@ Streams live tick data from the **Zerodha Kite WebSocket** feed, fans it out thr
                 │                   │  Queues & Workers:                │
                 ▼                   │  publish_queue → 4 pub threads    │
           instruments.csv           │  tick_hash_queue → 1 hash thread  │
-                │                   └─────────────┬─────────────────────┘
-                │                                 │
+                │                   └──────────────┬────────────────────┘
+                │                                  │
                 └──────► [read on connect]         │
                                                    │
-                          ┌────────────────────────┼────────────────────┐
-                          │                        │                    │
-                          ▼                        ▼                    ▼
-              ┌───────────────────┐  ┌─────────────────────────┐  ┌──────────────────┐
+                          ┌────────────────────────┼──────────────────────┐
+                          │                        │                      │
+                          ▼                        ▼                      ▼
+              ┌───────────────────┐  ┌──────────────────────────┐  ┌──────────────────┐
               │  Redis Pub/Sub    │  │  Redis Hash: tick_last   │  │  {user}-order    │
               │  channel: ticks   │  │  Redis Hash: tick_open   │  │  .log            │
               │                   │  │  Redis Hash: tick_high   │  │  (order updates) │
               │  JSON payload:    │  │  Redis Hash: tick_low    │  └──────────────────┘
               │  list of ticks    │  │  Redis Hash: tick_close  │
               └────────┬──────────┘  │  Redis Hash: tick_buyer  │
-                       │             │  Redis Hash: tick_seller  │
-                       │             └─────────────────────────┘
+                       │             │  Redis Hash: tick_seller │
+                       │             └──────────────────────────┘
                        │
                        ▼
          ┌─────────────────────────────────┐
@@ -77,17 +77,17 @@ Streams live tick data from the **Zerodha Kite WebSocket** feed, fans it out thr
          │                                 │
          │   writeToFile thread:           │
          │   • Redis pipeline publish      │
-         │   • Append to CSV              │
+         │   • Append to CSV               │
          └──────────┬──────────────────────┘
                     │
-        ┌───────────┴───────────┐
-        │                       │
-        ▼                       ▼
+        ┌───────────┴─────────────────┐
+        │                             │
+        ▼                             ▼
  ┌─────────────────┐   ┌────────────────────────┐
- │ Redis Pub/Sub   │   │ candle-YYYY-MM-DD.csv   │
- │ channel:        │   │                         │
- │ 1min_candles    │   │ time,symbol,O,H,L,C,    │
- │ (JSON per bar)  │   │ buyers,sellers,volume   │
+ │ Redis Pub/Sub   │   │ candle-YYYY-MM-DD.csv  │
+ │ channel:        │   │                        │
+ │ 1min_candles    │   │ time,symbol,O,H,L,C,   │
+ │ (JSON per bar)  │   │ buyers,sellers,volume  │
  └─────────────────┘   └────────────────────────┘
 ```
 
